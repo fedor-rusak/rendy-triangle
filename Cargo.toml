@@ -1,0 +1,27 @@
+[package]
+name = "rendy-triangle"
+version = "0.1.0"
+authors = ["Fedor Rusak <node@fedor-rusak.ru>"]
+edition = "2018"
+license = "MIT"
+keywords = ["graphics", "gfx-hal", "rendy"]
+description = "Triangle example as a separate repo"
+categories = ["rendering"]
+
+[features]
+metal = ["rendy-util/gfx-backend-metal"]
+vulkan = ["rendy-util/gfx-backend-vulkan"]
+
+[dependencies]
+failure = "0.1"
+rendy-shader = {git = "https://github.com/amethyst/rendy", rev = "08df51d"}
+rendy-util = {git = "https://github.com/amethyst/rendy", rev = "08df51d"}
+lazy_static = "1.0"
+log = "0.4"
+env_logger = "0.6"
+
+[target.'cfg(unix)'.dependencies]
+rendy = {git = "https://github.com/amethyst/rendy", rev = "08df51d", features=["metal"]}
+
+[target.'cfg(windows)'.dependencies]
+rendy = {git = "https://github.com/amethyst/rendy", rev = "08df51d", features=["vulkan"]}

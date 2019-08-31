@@ -1,0 +1,253 @@
+//!
+//! The mighty triangle example.
+//! This examples shows colord triangle on white background.
+//! Nothing fancy. Just prove that `rendy` works.
+//!
+
+use rendy::{
+    command::{Families, QueueId, RenderPassEncoder},
+    factory::{Config, Factory},
+    graph::{render::*, Graph, GraphBuilder, GraphContext, NodeBuffer, NodeImage},
+    hal,
+    memory::Dynamic,
+    mesh::{AsVertex, PosColor},
+    resource::{Buffer, BufferInfo, DescriptorSetLayout, Escape, Handle},
+    shader::{ShaderKind, SourceLanguage, SourceShaderInfo, SpirvShader},
+    wsi::winit::{EventsLoop, WindowBuilder},
+};
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+type Backend = rendy::metal::Backend;
+
+#[cfg(all(feature = "vulkan", target_os = "windows"))]
+type Backend = rendy::vulkan::Backend;
+
+lazy_static::lazy_static! {
+    static ref VERTEX: SpirvShader = SourceShaderInfo::new(
+        include_str!("shader.vert"),
+        concat!(env!("CARGO_MANIFEST_DIR"), "/src/shader.vert"),
+        ShaderKind::Vertex,
+        SourceLanguage::GLSL,
+        "main",
+    ).precompile().unwrap();
+
+    static ref FRAGMENT: SpirvShader = SourceShaderInfo::new(
+        include_str!("shader.frag"),
+        concat!(env!("CARGO_MANIFEST_DIR"), "/src/shader.frag"),
+        ShaderKind::Fragment,
+        SourceLanguage::GLSL,
+        "main",
+    ).precompile().unwrap();
+
+    static ref SHADERS: rendy::shader::ShaderSetBuilder = rendy::shader::ShaderSetBuilder::default()
+        .with_vertex(&*VERTEX).unwrap()
+        .with_fragment(&*FRAGMENT).unwrap();
+}
+
+#[derive(Debug, Default)]
+struct TriangleRenderPipelineDesc;
+
+#[derive(Debug)]
+struct TriangleRenderPipeline<B: hal::Backend> {
+    vertex: Option<Escape<Buffer<B>>>,
+}
+
+impl<B, T> SimpleGraphicsPipelineDesc<B, T> for TriangleRenderPipelineDesc
+where
+    B: hal::Backend,
+    T: ?Sized,
+{
+    type Pipeline = TriangleRenderPipeline<B>;
+
+    fn depth_stencil(&self) -> Option<hal::pso::DepthStencilDesc> {
+        None
+    }
+
+    fn load_shader_set(&self, factory: &mut Factory<B>, _aux: &T) -> rendy_shader::ShaderSet<B> {
+        SHADERS.build(factory, Default::default()).unwrap()
+    }
+
+    fn vertices(
+        &self,
+    ) -> Vec<(
+        Vec<hal::pso::Element<hal::format::Format>>,
+        hal::pso::ElemStride,
+        hal::pso::VertexInputRate,
+    )> {
+        return vec![PosColor::vertex().gfx_vertex_input_desc(hal::pso::VertexInputRate::Vertex)];
+    }
+
+    fn build(
+        self,
+        _ctx: &GraphContext<B>,
+        _factory: &mut Factory<B>,
+        _queue: QueueId,
+        _aux: &T,
+        buffers: Vec<NodeBuffer>,
+        images: Vec<NodeImage>,
+        set_layouts: &[Handle<DescriptorSetLayout<B>>],
+    ) -> Result<TriangleRenderPipeline<B>, failure::Error> {
+        assert!(buffers.is_empty());
+        assert!(images.is_empty());
+        assert!(set_layouts.is_empty());
+
+        Ok(TriangleRenderPipeline { vertex: None })
+    }
+}
+
+impl<B, T> SimpleGraphicsPipeline<B, T> for TriangleRenderPipeline<B>
+where
+    B: hal::Backend,
+    T: ?Sized,
+{
+    type Desc = TriangleRenderPipelineDesc;
+
+    fn prepare(
+        &mut self,
+        factory: &Factory<B>,
+        _queue: QueueId,
+        _set_layouts: &[Handle<DescriptorSetLayout<B>>],
+        _index: usize,
+        _aux: &T,
+    ) -> PrepareResult {
+        if self.vertex.is_none() {
+            let vbuf_size = u64::from(PosColor::vertex().stride) * 3;
+
+            let mut vbuf = factory
+                .create_buffer(
+                    BufferInfo {
+                        size: vbuf_size,
+                        usage: hal::buffer::Usage::VERTEX,
+                    },
+                    Dynamic,
+                )
+                .unwrap();
+
+            unsafe {
+                // Fresh buffer.
+                factory
+                    .upload_visible_buffer(
+                        &mut vbuf,
+                        0,
+                        &[
+                            PosColor {
+                                position: [0.0, -0.5, 0.0].into(),
+                                color: [1.0, 0.0, 0.0, 1.0].into(),
+                            },
+                            PosColor {
+                                position: [0.5, 0.5, 0.0].into(),
+                                color: [0.0, 1.0, 0.0, 1.0].into(),
+                            },
+                            PosColor {
+                                position: [-0.5, 0.5, 0.0].into(),
+                                color: [0.0, 0.0, 1.0, 1.0].into(),
+                            },
+                        ],
+                    )
+                    .unwrap();
+            }
+
+            self.vertex = Some(vbuf);
+        }
+
+        PrepareResult::DrawReuse
+    }
+
+    fn draw(
+        &mut self,
+        _layout: &B::PipelineLayout,
+        mut encoder: RenderPassEncoder<'_, B>,
+        _index: usize,
+        _aux: &T,
+    ) {
+        let vbuf = self.vertex.as_ref().unwrap();
+        unsafe {
+            encoder.bind_vertex_buffers(0, Some((vbuf.raw(), 0)));
+            encoder.draw(0..3, 0..1);
+        }
+    }
+
+    fn dispose(self, _factory: &mut Factory<B>, _aux: &T) {}
+}
+
+#[cfg(any(feature = "metal", feature = "vulkan"))]
+fn run(
+    event_loop: &mut EventsLoop,
+    factory: &mut Factory<Backend>,
+    families: &mut Families<Backend>,
+    mut graph: Graph<Backend, ()>,
+) -> Result<(), failure::Error> {
+    let started = std::time::Instant::now();
+
+    let mut frames = 0u64..;
+    let mut elapsed = started.elapsed();
+
+    for _ in &mut frames {
+        factory.maintain(families);
+        event_loop.poll_events(|_| ());
+        graph.run(factory, families, &());
+
+        elapsed = started.elapsed();
+        if elapsed >= std::time::Duration::new(5, 0) {
+            break;
+        }
+    }
+
+    let elapsed_ns = elapsed.as_secs() * 1_000_000_000 + u64::from(elapsed.subsec_nanos());
+
+    log::info!(
+        "Elapsed: {:?}. Frames: {}. FPS: {}",
+        elapsed,
+        frames.start,
+        frames.start * 1_000_000_000 / elapsed_ns
+    );
+
+    graph.dispose(factory, &());
+    Ok(())
+}
+
+#[cfg(any(feature = "metal", feature = "vulkan"))]
+fn main() {
+    env_logger::Builder::from_default_env()
+        .filter_module("rendy_triangle", log::LevelFilter::Trace)
+        .init();
+
+    let config: Config = Default::default();
+
+    let (mut factory, mut families): (Factory<Backend>, _) = rendy::factory::init(config).unwrap();
+
+    let mut event_loop = EventsLoop::new();
+
+    let window = WindowBuilder::new()
+        .with_title("Rendy-triangle")
+        .build(&event_loop)
+        .unwrap();
+
+    event_loop.poll_events(|_| ());
+
+    let surface = factory.create_surface(&window);
+
+    let mut graph_builder = GraphBuilder::<Backend, ()>::new();
+
+    graph_builder.add_node(
+        TriangleRenderPipeline::builder()
+            .into_subpass()
+            .with_color_surface()
+            .into_pass()
+            .with_surface(
+                surface,
+                Some(hal::command::ClearValue::Color([1.0, 1.0, 1.0, 1.0].into())),
+            ),
+    );
+
+    let graph = graph_builder
+        .build(&mut factory, &mut families, &())
+        .unwrap();
+
+    run(&mut event_loop, &mut factory, &mut families, graph).unwrap();
+}
+
+#[cfg(not(any(feature = "metal", feature = "vulkan")))]
+fn main() {
+    panic!("Specify mandatory feature: { metal, vulkan }");
+}
